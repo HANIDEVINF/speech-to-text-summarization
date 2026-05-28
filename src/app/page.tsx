@@ -1,7 +1,7 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
-import { AudioLines, BarChart3, Brain, Database, FileAudio, Loader2, Mic, Play, Sparkles, Upload, Volume2, Wand2 } from "lucide-react"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { AudioLines, BarChart3, Brain, CircleStop, Database, FileAudio, Loader2, Mic, Play, Sparkles, Upload, Volume2, Wand2 } from "lucide-react"
 
 type AudioModel = {
   model_type: string
@@ -117,7 +117,7 @@ function predict(features: number[], model: AudioModel) {
   return softmax(dense(h3, model.weights.out_kernel, model.weights.out_bias))
 }
 
-async function decodeAudio(fileOrUrl: File | string, inputLength: number) {
+async function decodeAudio(fileOrUrl: Blob | File | string, inputLength: number) {
   const context = new AudioContext()
   const buffer = typeof fileOrUrl === "string" ? await fetch(fileOrUrl).then((response) => response.arrayBuffer()) : await fileOrUrl.arrayBuffer()
   const decoded = await context.decodeAudioData(buffer.slice(0))
@@ -132,7 +132,10 @@ export default function Home() {
   const [audioUrl, setAudioUrl] = useState("/samples/digit_5.wav")
   const [expected, setExpected] = useState(5)
   const [loadingAudio, setLoadingAudio] = useState(false)
+  const [recording, setRecording] = useState(false)
   const [error, setError] = useState("")
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const chunksRef = useRef<Blob[]>([])
 
   useEffect(() => {
     fetch("/model/spoken_digit_model.json")
@@ -172,6 +175,44 @@ export default function Home() {
     }
   }
 
+  async function startRecording() {
+    if (!model) return
+    setError("")
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      chunksRef.current = []
+      const recorder = new MediaRecorder(stream)
+      recorderRef.current = recorder
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) chunksRef.current.push(event.data)
+      }
+      recorder.onstop = async () => {
+        const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" })
+        stream.getTracks().forEach((track) => track.stop())
+        setLoadingAudio(true)
+        try {
+          const decoded = await decodeAudio(blob, model.input_length)
+          setAudio(decoded)
+          setAudioUrl(URL.createObjectURL(blob))
+          setExpected(-1)
+        } catch (err) {
+          setError(`Could not decode recording: ${String(err)}`)
+        } finally {
+          setLoadingAudio(false)
+        }
+      }
+      recorder.start()
+      setRecording(true)
+    } catch (err) {
+      setError(`Microphone access failed: ${String(err)}`)
+    }
+  }
+
+  function stopRecording() {
+    recorderRef.current?.stop()
+    setRecording(false)
+  }
+
   return (
     <main className="min-h-screen bg-[#071015] text-slate-50">
       <section className="mx-auto grid min-h-screen max-w-7xl gap-8 px-6 py-10 lg:grid-cols-[390px_1fr]">
@@ -201,11 +242,23 @@ export default function Home() {
             ))}
           </div>
 
-          <label className="flex cursor-pointer items-center justify-center gap-2 rounded-md border border-white/10 bg-slate-950 px-4 py-3 text-sm font-bold transition hover:border-cyan-300/50">
-            <Upload className="h-4 w-4" />
-            Upload WAV Audio
-            <input type="file" accept="audio/*" className="hidden" onChange={(event) => handleUpload(event.target.files?.[0])} />
-          </label>
+          <div className="grid gap-2">
+            <button
+              onClick={recording ? stopRecording : startRecording}
+              className={`flex items-center justify-center gap-2 rounded-md px-4 py-3 text-sm font-bold transition ${
+                recording ? "bg-red-300 text-slate-950" : "bg-cyan-300 text-slate-950"
+              }`}
+            >
+              {recording ? <CircleStop className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+              {recording ? "Stop Recording" : "Record Your Voice"}
+            </button>
+
+            <label className="flex cursor-pointer items-center justify-center gap-2 rounded-md border border-white/10 bg-slate-950 px-4 py-3 text-sm font-bold transition hover:border-cyan-300/50">
+              <Upload className="h-4 w-4" />
+              Upload Your Audio
+              <input type="file" accept="audio/*" className="hidden" onChange={(event) => handleUpload(event.target.files?.[0])} />
+            </label>
+          </div>
 
           <audio src={audioUrl} controls className="mt-4 w-full" />
 
@@ -216,7 +269,11 @@ export default function Home() {
             </div>
             <div className="text-5xl font-black text-cyan-200">{loadingAudio ? "..." : predicted >= 0 ? predicted : "-"}</div>
             <div className="mt-2 text-sm text-slate-400">
-              {expected >= 0 ? `Expected sample label: ${expected}` : "Uploaded audio has no known label"}
+              {recording
+                ? "Speak one digit clearly, then stop recording."
+                : expected >= 0
+                  ? `Expected sample label: ${expected}`
+                  : "Your own audio has no known label, so judge the predicted digit."}
             </div>
           </div>
         </aside>
